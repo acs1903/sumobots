@@ -36,6 +36,10 @@
 
 #include <Wire.h>
 #include <ZumoShield.h>
+#include "Servo.h"
+
+Servo servo;
+#define sensor A0
 
 // #define LOG_SERIAL // write log output to serial port
 
@@ -69,6 +73,15 @@ ZumoMotors motors;
 
 #define RIGHT 1
 #define LEFT -1
+
+// Mode 
+enum OperationMode { Sweep, Forward, EdgeLeft, EdgeRight, Contact };
+OperationMode currentMode;
+
+long START_TIME = 0;
+long OPP_FOUND = false;
+bool SWEEP_CLOCKWISE = true; // above 90
+
 
 enum ForwardSpeed { SearchSpeed, SustainedSpeed, FullSpeed };
 ForwardSpeed _forwardSpeed;  // current forward speed setting
@@ -159,7 +172,10 @@ void setup()
   Serial.begin(9600);
   lsm303.getLogHeader();
 #endif
+  Serial.begin(9600);
+  myservo.attach(6);
 
+  currentMode = Sweep;
   randomSeed((unsigned int) millis());
 
   // uncomment if necessary to correct motor directions
@@ -210,31 +226,81 @@ void loop()
     waitForButtonAndCountDown(true);
   }
 
+  if (START_TIME == 0)
+  { 
+    START_TIME = millis();
+    float reading = analogRead(sensor);
+    float previous_reading = reading;
+    float current_reading = reading;
+  }
+
+
   loop_start_time = millis();
   lsm303.readAcceleration(loop_start_time);
   sensors.read(sensor_values);
 
-  if ((_forwardSpeed == FullSpeed) && (loop_start_time - full_speed_start_time > FULL_SPEED_DURATION_LIMIT))
-  {
-    setForwardSpeed(SustainedSpeed);
-  }
+    if (sensor_values[0] < QTR_THRESHOLD)
+    {
+        currentMode = EdgeLeft;
+    }
+    else if (sensor_values[5] < QTR_THRESHOLD)
+    {
+        // if rightmost sensor detects line, reverse and turn to the left
+        currentMode = EdgeRight;
+    }
+    if (check_for_contact()) {
+        currentMode = Contact;
+    }
 
-  if (sensor_values[0] < QTR_THRESHOLD)
-  {
-    // if leftmost sensor detects line, reverse and turn to the right
-    turn(RIGHT, true);
-  }
-  else if (sensor_values[5] < QTR_THRESHOLD)
-  {
-    // if rightmost sensor detects line, reverse and turn to the left
-    turn(LEFT, true);
-  }
-  else  // otherwise, go straight
-  {
-    if (check_for_contact()) on_contact_made();
-    int speed = getForwardSpeed();
-    motors.setSpeeds(speed, speed);
-  }
+    switch (currentMode) {
+
+        case Forward: 
+            if ((_forwardSpeed == FullSpeed) && (loop_start_time - full_speed_start_time > FULL_SPEED_DURATION_LIMIT))
+            {
+                setForwardSpeed(SustainedSpeed);
+            }
+            int speed = getForwardSpeed();
+            motors.setSpeeds(speed, speed);
+            break;
+        case EdgeLeft:
+            // if leftmost sensor detects line, reverse and turn to the right
+            turn(RIGHT, true);
+            currentMode = Forward;
+            break;
+        case EdgeRight:
+            // if rightmost sensor detects line, reverse and turn to the left
+            turn(LEFT, true);
+            currentMode = Forward;
+            break;
+        case Contact:
+            on_contact_made();
+        case Sweep:
+            if (millis() - START_TIME > 500) {
+                servo.write(90);
+                SWEEP_CLOCKWISE = !SWEEP_CLOCKWISE;
+                currentMode = Forward;
+                START_TIME = 0;
+            } else {
+                if (SWEEP_CLOCKWISE)
+                {
+                    servo.write(95);
+                }
+                else
+                {
+                    servo.write(85);
+                }
+            }
+            float reading = analogRead(sensor);
+            current_reading = reading;
+            if (current_reading - previous_reading > 50) {
+                // robot found, turn there, move there
+                long servoTime = millis() - START_TIME;
+                int direction = SWEEP_CLOCKWISE ? RIGHT : LEFT;
+                turnForTime(direction, servoTime);
+                currentMode = Forward;
+            }
+            break;
+    }
 }
 
 // execute turn
@@ -263,15 +329,11 @@ void turn(char direction, bool randomize)
   last_turn_time = millis();
 }
 
-// execute turn to specific angle (approximately)
-// angle: -180 to 180 degrees, specifying what angle to turn to
-void turnToAngle(int angle)
+// execute turn for specific servo time
+void turnForTime(int direction, long servoTime)
 {
-  int direction = (angle < 0) ? LEFT : RIGHT;
-
   motors.setSpeeds(TURN_SPEED * direction, -TURN_SPEED * direction);
-  unsigned int duration = (abs(angle) * HALF_TURN_DURATION) / 180;
-  delay(duration);
+  delay(servoTime);
   motors.setSpeeds(0, 0);
 }
 
