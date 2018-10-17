@@ -81,6 +81,9 @@ OperationMode currentMode;
 long START_TIME = 0;
 long OPP_FOUND = false;
 bool SWEEP_CLOCKWISE = true; // above 90
+float previous_reading;
+float current_reading;
+int EdgeCounter = 0;
 
 
 enum ForwardSpeed { SearchSpeed, SustainedSpeed, FullSpeed };
@@ -173,7 +176,7 @@ void setup()
   lsm303.getLogHeader();
 #endif
   Serial.begin(9600);
-  myservo.attach(6);
+  //servo.attach(6);
 
   currentMode = Sweep;
   randomSeed((unsigned int) millis());
@@ -230,10 +233,14 @@ void loop()
   { 
     START_TIME = millis();
     float reading = analogRead(sensor);
-    float previous_reading = reading;
-    float current_reading = reading;
+    previous_reading = reading;
+    current_reading = reading;
   }
 
+  if (EdgeCounter >= 3) {
+    currentMode = Sweep;
+    EdgeCounter = 0;
+  }
 
   loop_start_time = millis();
   lsm303.readAcceleration(loop_start_time);
@@ -251,7 +258,7 @@ void loop()
     if (check_for_contact()) {
         currentMode = Contact;
     }
-
+    int speed = 0;
     switch (currentMode) {
 
         case Forward: 
@@ -259,45 +266,37 @@ void loop()
             {
                 setForwardSpeed(SustainedSpeed);
             }
-            int speed = getForwardSpeed();
+            speed = getForwardSpeed();
             motors.setSpeeds(speed, speed);
             break;
         case EdgeLeft:
             // if leftmost sensor detects line, reverse and turn to the right
             turn(RIGHT, true);
             currentMode = Forward;
+            EdgeCounter++;
             break;
         case EdgeRight:
             // if rightmost sensor detects line, reverse and turn to the left
             turn(LEFT, true);
             currentMode = Forward;
+            EdgeCounter++;
             break;
         case Contact:
             on_contact_made();
         case Sweep:
-            if (millis() - START_TIME > 500) {
-                servo.write(90);
-                SWEEP_CLOCKWISE = !SWEEP_CLOCKWISE;
+            if (millis() - START_TIME > 1500) {
                 currentMode = Forward;
-                START_TIME = 0;
             } else {
-                if (SWEEP_CLOCKWISE)
-                {
-                    servo.write(95);
-                }
-                else
-                {
-                    servo.write(85);
-                }
+              turnForTime(RIGHT, 10);
             }
             float reading = analogRead(sensor);
             current_reading = reading;
             if (current_reading - previous_reading > 50) {
-                // robot found, turn there, move there
-                long servoTime = millis() - START_TIME;
-                int direction = SWEEP_CLOCKWISE ? RIGHT : LEFT;
-                turnForTime(direction, servoTime);
                 currentMode = Forward;
+                _forwardSpeed = FullSpeed;
+            }
+            else {
+              previous_reading = current_reading;
             }
             break;
     }
